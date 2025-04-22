@@ -20,6 +20,8 @@
 #include "config.h"
 #endif
 
+#include <chrono>
+#include <thread>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -1246,6 +1248,242 @@ int memcache_binary_protocol::write_arbitrary_command(const char *val, int val_l
 
 /////////////////////////////////////////////////////////////////////////
 
+class dicedb_protocol : public abstract_protocol {
+protected:
+    enum response_state { rs_initial, rs_read_value, rs_read_end };
+    response_state m_response_state;
+    unsigned int m_value_len;
+    size_t m_response_len;
+    std::string m_client_id;
+    int m_connection_index;
+
+public:
+    dicedb_protocol() : abstract_protocol(), m_response_state(rs_initial), m_response_len(0) { }
+    virtual dicedb_protocol* clone(void) { return new dicedb_protocol(); }
+    virtual int select_db(int db);
+    virtual int authenticate(const char *credentials);
+    virtual int configure_protocol(enum PROTOCOL_TYPE type);
+    virtual int write_command_cluster_slots();
+    virtual int write_command_set(const char *key, int key_len, const char *value, int value_len, int expiry, unsigned int offset);
+    virtual int write_command_get(const char *key, int key_len, unsigned int offset);
+    virtual int write_command_multi_get(const keylist *keylist);
+    virtual int write_command_wait(unsigned int num_slaves, unsigned int timeout);
+    virtual int parse_response(void);
+
+    // handle arbitrary command
+    virtual bool format_arbitrary_command(arbitrary_command& cmd);
+    virtual int write_arbitrary_command(const command_arg *arg);
+    virtual int write_arbitrary_command(const char *val, int val_len);
+};
+
+int dicedb_protocol::select_db(int db)
+{
+    // yet to be implemented
+    return 0;
+}
+
+int dicedb_protocol::authenticate(const char *credentials)
+{
+    // yet to be implemented
+    return 0;
+}
+
+int dicedb_protocol::configure_protocol(enum PROTOCOL_TYPE type)
+{
+    // trying handshake command
+
+    int size = 0;
+    
+    // Clear any existing data in the write buffer
+    evbuffer_drain(m_write_buf, evbuffer_get_length(m_write_buf));
+    
+    // Command message
+    // Field 1 (cmd): string
+    // Field 2 (args): repeated string
+    
+    // Write cmd field (field 1, wire type 2 = length-delimited)
+    const char* cmd = "HANDSHAKE";
+    int cmd_len = strlen(cmd);
+    unsigned char cmd_tag[] = {(1 << 3) | 2};  // Field 1, wire type 2
+    size += evbuffer_add(m_write_buf, cmd_tag, sizeof(cmd_tag));
+    size += evbuffer_add(m_write_buf, &cmd_len, 1);
+    size += evbuffer_add(m_write_buf, cmd, cmd_len);
+    
+    unsigned char args_tag[] = {(2 << 3) | 2};  // Field 2, wire type 2
+    
+    // First argument (client ID)
+    char client_id[32];
+    int client_id_len = snprintf(client_id, sizeof(client_id), "client-%d", m_connection_index);
+    size += evbuffer_add(m_write_buf, args_tag, sizeof(args_tag));
+    size += evbuffer_add(m_write_buf, &client_id_len, 1);
+    size += evbuffer_add(m_write_buf, client_id, client_id_len);
+    
+
+    const char* version = "1.0";
+    int version_len = strlen(version);
+    size += evbuffer_add(m_write_buf, args_tag, sizeof(args_tag));
+    size += evbuffer_add(m_write_buf, &version_len, 1);  
+    size += evbuffer_add(m_write_buf, version, version_len);
+    
+    return size;
+}
+
+int dicedb_protocol::write_command_cluster_slots()
+{
+    // yet to be implemented
+    return 0;
+}
+
+int dicedb_protocol::write_command_set(const char *key, int key_len, const char *value, int value_len, int expiry, unsigned int offset)
+{
+    int size = 0;
+
+    evbuffer_drain(m_write_buf, evbuffer_get_length(m_write_buf));
+
+    // Command message
+    // Field 1 (cmd): string
+    // Field 2 (args): repeated string
+
+    const char* cmd = nullptr;
+
+    // copied from redis 
+    if (offset > 0) {
+        cmd = "SETRANGE";
+    } else if (expiry > 0) {
+        cmd = "SETEX";
+    } else {
+        cmd = "SET";
+    }
+
+    // Write cmd field (field 1, wire type 2 = length-delimited)
+    int cmd_len = strlen(cmd);
+    unsigned char cmd_tag[] = {(1 << 3) | 2};  // Field 1, wire type 2
+    size += evbuffer_add(m_write_buf, cmd_tag, sizeof(cmd_tag));
+    size += evbuffer_add(m_write_buf, &cmd_len, 1);
+    size += evbuffer_add(m_write_buf, cmd, cmd_len);
+
+    unsigned char args_tag[] = {(2 << 3) | 2};
+
+    // for key
+    size += evbuffer_add(m_write_buf, args_tag, sizeof(args_tag));
+    size += evbuffer_add(m_write_buf, &key_len, 1);
+    size += evbuffer_add(m_write_buf, key, key_len);
+
+    // for args
+    if (offset > 0) {
+        char offset_str[20];
+        int offset_len = snprintf(offset_str, sizeof(offset_str), "%u", offset);
+        size += evbuffer_add(m_write_buf, args_tag, sizeof(args_tag));
+        size += evbuffer_add(m_write_buf, &offset_len, 1);
+        size += evbuffer_add(m_write_buf, offset_str, offset_len);
+    } else if (expiry > 0) {
+        char expiry_str[20];
+        int expiry_len = snprintf(expiry_str, sizeof(expiry_str), "%u", expiry);
+        size += evbuffer_add(m_write_buf, args_tag, sizeof(args_tag));
+        size += evbuffer_add(m_write_buf, &expiry_len, 1);
+        size += evbuffer_add(m_write_buf, expiry_str, expiry_len);
+    }
+
+    size += evbuffer_add(m_write_buf, args_tag, sizeof(args_tag));
+    size += evbuffer_add(m_write_buf, &value_len, 1);
+    size += evbuffer_add(m_write_buf, value, value_len);
+
+    return size;
+}
+
+int dicedb_protocol::write_command_get(const char *key, int key_len, unsigned int offset)
+{
+    assert(key != NULL);
+    assert(key_len > 0);
+    int size = 0;
+    
+    // Clear any existing data in the write buffer
+    evbuffer_drain(m_write_buf, evbuffer_get_length(m_write_buf));
+    
+    // Command message
+    // Field 1 (cmd): string
+    // Field 2 (args): repeated string
+    
+    // Write cmd field (field 1, wire type 2 = length-delimited)
+    const char* cmd = "GET";
+    int cmd_len = strlen(cmd);
+    unsigned char cmd_tag[] = {(1 << 3) | 2};  // Field 1, wire type 2
+    size += evbuffer_add(m_write_buf, cmd_tag, sizeof(cmd_tag));
+    size += evbuffer_add(m_write_buf, &cmd_len, 1);  // Length as single byte
+    size += evbuffer_add(m_write_buf, cmd, cmd_len);
+    
+    // Write args field (field 2, wire type 2 = length-delimited)
+    unsigned char args_tag[] = {(2 << 3) | 2};  // Field 2, wire type 2
+    
+    // for key
+    size += evbuffer_add(m_write_buf, args_tag, sizeof(args_tag));
+    size += evbuffer_add(m_write_buf, &key_len, 1);  // Length as single byte
+    size += evbuffer_add(m_write_buf, key, key_len);
+    
+    // for offset
+    if (offset > 0) {
+        char offset_str[30];
+        int offset_len = snprintf(offset_str, sizeof(offset_str), "%u", offset);
+        size += evbuffer_add(m_write_buf, args_tag, sizeof(args_tag));
+        size += evbuffer_add(m_write_buf, &offset_len, 1);
+        size += evbuffer_add(m_write_buf, offset_str, offset_len);
+    }
+    
+    return size;
+}
+
+int dicedb_protocol::write_command_multi_get(const keylist *keylist)
+{
+    // yet to be implemented
+    return 0
+}
+
+int dicedb_protocol::write_command_wait(unsigned int num_slaves, unsigned int timeout)
+{
+    // yet to be implemented
+    return 0;
+}
+
+int dicedb_protocol::parse_response(void)
+{
+    size_t buffer_len = evbuffer_get_length(m_read_buf);
+
+    if (buffer_len == 0) {
+        // fprintf(stderr, "[DEBUG] No data in buffer yet\n");
+        return 0; // Need more data
+    }
+
+    //TODO: parse based on the protobuf responses and then deal with it
+    if (buffer_len >= 1) {
+        m_last_response.incr_hits();
+    
+        evbuffer_drain(m_read_buf, buffer_len);
+        
+        // Reset state
+        m_response_state = rs_initial;
+        
+        return 1;
+    }
+
+    return 0;
+
+bool dicedb_protocol::format_arbitrary_command(arbitrary_command& cmd) {
+    // yet to be implemented
+    return false;
+}
+
+int dicedb_protocol::write_arbitrary_command(const command_arg *arg) {
+    // yet to be implemented
+    return 0;
+}
+
+int dicedb_protocol::write_arbitrary_command(const char *val, int val_len) {
+    // yet to be implemented
+    return 0;
+}
+
+/////////////////////////////////////////////////////////////////////////
+
 class abstract_protocol *protocol_factory(enum PROTOCOL_TYPE type)
 {
     if (is_redis_protocol(type)) {
@@ -1254,6 +1492,8 @@ class abstract_protocol *protocol_factory(enum PROTOCOL_TYPE type)
         return new memcache_text_protocol();
     } else if (type == PROTOCOL_MEMCACHE_BINARY) {
         return new memcache_binary_protocol();
+    } else if (type == PROTOCOL_DICEDB) {
+        return new dicedb_protocol();
     } else {
         benchmark_error_log("Error: unknown protocol type: %d.\n", type);
         return NULL;

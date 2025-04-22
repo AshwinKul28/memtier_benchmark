@@ -554,8 +554,11 @@ static int config_parse_args(int argc, char *argv[], struct benchmark_config *cf
                         cfg->protocol = PROTOCOL_MEMCACHE_TEXT;
                     } else if (strcmp(optarg, "memcache_binary") == 0) {
                         cfg->protocol = PROTOCOL_MEMCACHE_BINARY;
+                    } else if (strcmp(optarg, "dicedb") == 0) {
+                        cfg->protocol = PROTOCOL_DICEDB;
+                        fprintf(stderr, "protocol: PROTOCOL_DICEDB\n");
                     } else {
-                        fprintf(stderr, "error: supported protocols are 'memcache_text', 'memcache_binary', 'redis', 'resp2' and resp3'.\n");
+                        fprintf(stderr, "error: supported protocols are 'memcache_text', 'memcache_binary', 'redis', 'resp2', 'resp3' and 'dicedb'.\n");
                         return -1;
                     }
                     break;
@@ -1159,7 +1162,7 @@ run_stats run_benchmark(int run_id, benchmark_config* cfg, object_generator* obj
     }
 
     // launch threads
-    fprintf(stderr, "[RUN #%u] Launching threads now...\n", run_id);
+    fprintf(stderr, "[RUN] Launching threads now...\n");
     for (std::vector<cg_thread*>::iterator i = threads.begin(); i != threads.end(); i++) {
         (*i)->start();
     }
@@ -1182,6 +1185,8 @@ run_stats run_benchmark(int run_id, benchmark_config* cfg, object_generator* obj
         unsigned long int duration = 0;
         unsigned int thread_counter = 0;
         unsigned long int total_latency = 0;
+
+        
 
         for (std::vector<cg_thread*>::iterator i = threads.begin(); i != threads.end(); i++) {
             if (!(*i)->m_finished)
